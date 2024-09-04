@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <PS4Controller.h>
 #include <CAN.h>
 
 const int LENGTH = 1; //ロボットの中心からオムニまでの長さ
@@ -8,6 +7,23 @@ unsigned long long data;
 const uint8_t dead_zone = 30;//デッドゾーン
 
 uint8_t TxData[8];
+
+struct ControlData {
+    int8_t left_x;    // 左スティックX
+    int8_t left_y;    // 左スティックY
+    int8_t right_x;   // 右スティックX
+    int8_t right_y;   // 右スティックY
+
+    uint8_t left_firing : 1; // 左発射
+    uint8_t right_firing : 1; // 右発射
+    uint8_t collect : 1;     // 回収
+    uint8_t take : 1;        // 巻取
+
+    uint8_t forward : 1;     // 前進
+    uint8_t back : 1;        // 後退
+    uint8_t left : 1;        // 左
+    uint8_t right : 1;       // 右
+};
 
 struct Motor_RPMs{
   uint16_t frontLeft;
@@ -41,6 +57,9 @@ unsigned long long combineMotorRPMs(Motor_RPMs RPMs) {
 
 void setup() {
   Serial.begin(115200);
+  Serial2.begin(115200);
+  while (!Serial2);
+  
   if (!CAN.begin(1000E3)) {
     Serial.println("ERROR:Starting CAN failed!");
     CAN.beginPacket(ID);
@@ -49,36 +68,26 @@ void setup() {
     while (1);
     delay(1);
   }
-  
-  PS4.begin("00:00:00:00:00:00");
 }
 
 void loop() {
-  
-  if(!PS4.isConnected()){
-    Serial.println("ERROR:Cant PS4Connect!!");
-    return;
+  ControlData ps;
+  if (Serial2.available() >= sizeof(ControlData)) {
+    // 構造体のサイズ分のデータをシリアルポートから読み取る
+    Serial.readBytes(reinterpret_cast<uint8_t*>(&ps), sizeof(ps));
   }
-
-  int8_t left_x = PS4.LStickX();
-  int8_t left_y = PS4.LStickY();
-  int8_t right_x = PS4.RStickX();
-  //int8_t right_y = PS4.RStickY();
 
   Motor_RPMs RPMs;
 
-  if(abs(left_x) < dead_zone && abs(left_y) < dead_zone && abs(right_x) <dead_zone){
-    data = 0; //デッドゾーン以下の時データを0にする
-  } else{
-    RPMs = calculateWheelRPMs(left_x,left_y,right_x); //メカナムの各モーターのＲＰＭを計算
-    data = combineMotorRPMs(RPMs); //64bitのデータを取得
-  }
+  RPMs = calculateWheelRPMs(ps.left_x,ps.left_y,ps.right_x); //メカナムの各モーターのＲＰＭを計算
+  data = combineMotorRPMs(RPMs); //64bitのデータを取得
 
   Serial.printf("data: 0x%016llX\n", data);
   Serial.printf("FL::%x\r\n",uint16_t(RPMs.frontLeft));
   Serial.printf("FR::%X\r\n",uint16_t(RPMs.frontRight));
   Serial.printf("RL::%X\r\n",uint16_t(RPMs.rearLeft));
   Serial.printf("RR::%X\r\n",uint16_t(RPMs.rearRight));
+
   
   for (int i = 0; i < 8; i++) {
     TxData[i] = (data >> (56 - i * 8)) & 0xFF; //64bitのデータを8bitに分割する
