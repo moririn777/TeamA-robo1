@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <CAN.h>
+#include <ESP32Servo.h>
 
 const int LENGTH = 1; //ロボットの中心からオムニまでの長さ
 unsigned int ID = 0x555; //ID
@@ -7,6 +8,16 @@ unsigned long long data;
 const uint8_t dead_zone = 30;//デッドゾーン
 
 uint8_t TxData[8];
+
+const uint8_t TXPIN = 2;
+const uint8_t RXPIN = 0;
+
+const uint8_t RIGHT_SERVO = 23;
+const uint8_t LEFT_SERVO = 27;
+
+const uint8_t COLLECT_PWM = 33;
+const uint8_t TAKE_PIN = 32;
+
 
 struct ControlData {
     int8_t left_x;    // 左スティックX
@@ -21,7 +32,7 @@ struct ControlData {
 
     uint8_t forward : 1;     // 前進
     uint8_t back : 1;        // 後退
-    uint8_t left : 1;        // 左
+    uint8_t left : 1;       // 左
     uint8_t right : 1;       // 右
 };
 
@@ -58,8 +69,11 @@ unsigned long long combineMotorRPMs(Motor_RPMs RPMs) {
 void setup() {
   Serial.begin(115200);
   Serial2.begin(115200);
-  while (!Serial2);
-  
+  if (!Serial2) {
+    Serial.println("ERROR: Serial2 initialization failed!");
+    while (1); 
+  }
+
   if (!CAN.begin(1000E3)) {
     Serial.println("ERROR:Starting CAN failed!");
     CAN.beginPacket(ID);
@@ -71,31 +85,35 @@ void setup() {
 }
 
 void loop() {
-  ControlData ps;
-  if (Serial2.available() >= sizeof(ControlData)) {
-    // 構造体のサイズ分のデータをシリアルポートから読み取る
-    Serial.readBytes(reinterpret_cast<uint8_t*>(&ps), sizeof(ps));
-  }
-
+  ControlData ps; 
   Motor_RPMs RPMs;
+  uint64_t receiveData;
 
-  RPMs = calculateWheelRPMs(ps.left_x,ps.left_y,ps.right_x); //メカナムの各モーターのＲＰＭを計算
-  data = combineMotorRPMs(RPMs); //64bitのデータを取得
+  if (Serial2.available()) {
+    // 構造体のサイズ分のデータをserial2から読み取る
+    Serial.println("come data");
+    receiveData = 0;
+    Serial2.readBytes(reinterpret_cast<uint8_t*>(&receiveData), sizeof(receiveData));
+    memcpy(&ps, &receiveData, sizeof(ps)); // 64ビットの整数から構造体にコピー
 
-  Serial.printf("data: 0x%016llX\n", data);
-  Serial.printf("FL::%x\r\n",uint16_t(RPMs.frontLeft));
-  Serial.printf("FR::%X\r\n",uint16_t(RPMs.frontRight));
-  Serial.printf("RL::%X\r\n",uint16_t(RPMs.rearLeft));
-  Serial.printf("RR::%X\r\n",uint16_t(RPMs.rearRight));
+    RPMs = calculateWheelRPMs(ps.left_x,ps.left_y,ps.right_x); //メカナムの各モーターのＲＰＭを計算
+    data = combineMotorRPMs(RPMs); //64bitのデータを取得
 
-  
-  for (int i = 0; i < 8; i++) {
-    TxData[i] = (data >> (56 - i * 8)) & 0xFF; //64bitのデータを8bitに分割する
+    Serial.printf("data: 0x%016llX\r\n", data);
+    Serial.printf("FL::%d\r\n",(ps.left_x));
+    Serial.printf("FR::%d\r\n",(ps.left_y));
+    Serial.printf("RL::%d\r\n",(ps.right_x));
+    Serial.printf("RR::%d\r\n",(ps.right_y));
+
+    
+    for (int i = 0; i < 8; i++) {
+      TxData[i] = (data >> (56 - i * 8)) & 0xFF; //64bitのデータを8bitに分割する
+    }
+
+    //CAN.beginPacket(ID);
+    //CAN.write(TxData, sizeof(TxData));  
+    //CAN.endPacket();
+    
+    Serial2.flush();
   }
-
-  CAN.beginPacket(ID);
-  CAN.write(TxData, sizeof(TxData));  
-  CAN.endPacket();  
-  
-  delay(10);
 }
