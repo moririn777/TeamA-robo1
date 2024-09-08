@@ -3,37 +3,44 @@
 #include <ESP32Servo.h>
 
 const int LENGTH = 1; //ロボットの中心からオムニまでの長さ
-unsigned int ID = 0x555; //ID
-unsigned long long data;
-const uint8_t dead_zone = 30;//デッドゾーン
+const unsigned int ID = 0x555; //ID
 
-uint8_t TxData[8];
+const uint8_t DEAD_ZONE = 30;//デッドゾーン
 
-const uint8_t TXPIN = 2;
-const uint8_t RXPIN = 0;
+const unsigned long TIMEOUT = 50; //タイムアウト時間(ms)
+static unsigned long lastReceiveTime = 0; //最後にデータが送られてきた時間
 
-const uint8_t RIGHT_SERVO = 23;
-const uint8_t LEFT_SERVO = 27;
 
-const uint8_t COLLECT_PWM = 33;
-const uint8_t TAKE_PIN = 32;
+//TODO ピン番号を変更
+const uint8_t TX_PIN = 2;
+const uint8_t RX_PIN = 0;
 
+const uint8_t RIGHT_SERVO = 23; //右発射用サーボ 
+const uint8_t LEFT_SERVO = 27;  //左発射用サーボ
+
+const uint8_t COLLECT_PWM = 33;  //回収用モータPWM
+const uint8_t COLLECT_DIR = 0;   //DIR
+const uint8_t TAKE_PWM = 32;     //巻取用モータPWM
+const uint8_t TAKE_DIR = 0;      //DIR
+
+const uint8_t LEFT_SENSOR = 0;   //左のセンサー
+const uint8_t RIGHT_SENSOR = 0;  //右のセンサー
 
 struct ControlData {
-    int8_t left_x;    // 左スティックX
-    int8_t left_y;    // 左スティックY
-    int8_t right_x;   // 右スティックX
-    int8_t right_y;   // 右スティックY
+  int8_t left_x;    // 左スティックX
+  int8_t left_y;    // 左スティックY
+  int8_t right_x;   // 右スティックX
+  int8_t right_y;   // 右スティックY
 
-    uint8_t left_firing : 1; // 左発射
-    uint8_t right_firing : 1; // 右発射
-    uint8_t collect : 1;     // 回収
-    uint8_t take : 1;        // 巻取
+  uint8_t square : 1;   //四角ボタン
+  uint8_t circle : 1;   //丸ボタン 
+  uint8_t triangle : 1; //三角ボタン  
+  uint8_t cross : 1;    //バツボタン  
 
-    uint8_t forward : 1;     // 前進
-    uint8_t back : 1;        // 後退
-    uint8_t left : 1;       // 左
-    uint8_t right : 1;       // 右
+  uint8_t up : 1;     // 上
+  uint8_t down: 1;    // 下
+  uint8_t left : 1;   // 左
+  uint8_t right : 1;  // 右
 };
 
 struct Motor_RPMs{
@@ -44,14 +51,14 @@ struct Motor_RPMs{
 };
 
 Motor_RPMs calculateWheelRPMs(int x,int y, int rotation){ //オムニホイールの各RPMを代入
-  Motor_RPMs RPMs;
+  Motor_RPMs rpms;
   
-  RPMs.frontLeft = (cos(radians(45.0)) * x) + (sin(radians(45.0)) * y) + rotation;
-  RPMs.frontRight = (cos(radians(135.0)) * x) + (sin(radians(135.0)) * y) - rotation;
-  RPMs.rearLeft = (cos(radians(225.0)) * x) + (sin(radians(225.0)) * y) + rotation;
-  RPMs.rearRight = (cos(radians(315.0)) * x) + (sin(radians(315.0)) * y) - rotation;
+  rpms.frontLeft = (cos(radians(45.0)) * x) + (sin(radians(45.0)) * y) + rotation;
+  rpms.frontRight = (cos(radians(135.0)) * x) + (sin(radians(135.0)) * y) - rotation;
+  rpms.rearLeft = (cos(radians(225.0)) * x) + (sin(radians(225.0)) * y) + rotation;
+  rpms.rearRight = (cos(radians(315.0)) * x) + (sin(radians(315.0)) * y) - rotation;
 
-  return RPMs;
+  return rpms;
 }
 
 unsigned long long combineMotorRPMs(Motor_RPMs RPMs) {
@@ -66,13 +73,27 @@ unsigned long long combineMotorRPMs(Motor_RPMs RPMs) {
   return RPMdata;
 }
 
+void printControlData(const ControlData& data) {
+  Serial.println("Control Data:");
+  Serial.print("Left Stick X: "); Serial.println(data.left_x);
+  Serial.print("Left Stick Y: "); Serial.println(data.left_y);
+  Serial.print("Right Stick X: "); Serial.println(data.right_x);
+  Serial.print("Right Stick Y: "); Serial.println(data.right_y);
+
+  Serial.print("Square: "); Serial.println(data.square ? "Pressed" : "Not Pressed");
+  Serial.print("Circle: "); Serial.println(data.circle ? "Pressed" : "Not Pressed");
+  Serial.print("Triangle: "); Serial.println(data.triangle ? "Pressed" : "Not Pressed");
+  Serial.print("Cross: "); Serial.println(data.cross ? "Pressed" : "Not Pressed");
+
+  Serial.print("Up: "); Serial.println(data.up ? "Pressed" : "Not Pressed");
+  Serial.print("Down: "); Serial.println(data.down ? "Pressed" : "Not Pressed");
+  Serial.print("Left: "); Serial.println(data.left ? "Pressed" : "Not Pressed");
+  Serial.print("Right: "); Serial.println(data.right ? "Pressed" : "Not Pressed");
+}
+
 void setup() {
   Serial.begin(115200);
   Serial2.begin(115200);
-  if (!Serial2) {
-    Serial.println("ERROR: Serial2 initialization failed!");
-    while (1); 
-  }
 
   if (!CAN.begin(1000E3)) {
     Serial.println("ERROR:Starting CAN failed!");
@@ -85,35 +106,44 @@ void setup() {
 }
 
 void loop() {
+  static String buffer ="";
   ControlData ps; 
-  Motor_RPMs RPMs;
-  uint64_t receiveData;
+  Motor_RPMs rpms;
 
-  if (Serial2.available()) {
-    // 構造体のサイズ分のデータをserial2から読み取る
-    Serial.println("come data");
-    receiveData = 0;
-    Serial2.readBytes(reinterpret_cast<uint8_t*>(&receiveData), sizeof(receiveData));
-    memcpy(&ps, &receiveData, sizeof(ps)); // 64ビットの整数から構造体にコピー
+  uint64_t receiveData=0;  //UART2の受信データ格納用
+  unsigned long long data; //モータのRPMデータ格納用
+  
+  uint8_t txData[8];  //CANの送信データ格納用
+  
+  while (Serial2.available()) {
+    char incomingByte = Serial2.read();
+    lastReceiveTime = millis();
 
-    RPMs = calculateWheelRPMs(ps.left_x,ps.left_y,ps.right_x); //メカナムの各モーターのＲＰＭを計算
-    data = combineMotorRPMs(RPMs); //64bitのデータを取得
+    if(incomingByte == '\n'){
+      if(buffer.length() >= sizeof(receiveData)){
+        memcpy(&receiveData,buffer.c_str(),sizeof(receiveData));
+        memcpy(&ps, &receiveData, sizeof(ps)); // 64ビットの整数から構造体にコピー
 
-    Serial.printf("data: 0x%016llX\r\n", data);
-    Serial.printf("FL::%d\r\n",(ps.left_x));
-    Serial.printf("FR::%d\r\n",(ps.left_y));
-    Serial.printf("RL::%d\r\n",(ps.right_x));
-    Serial.printf("RR::%d\r\n",(ps.right_y));
+        rpms = calculateWheelRPMs(ps.left_x,ps.left_y,ps.right_x); //メカナムの各モーターのＲＰＭを計算
+        data = combineMotorRPMs(rpms); //64bitのデータを取得
 
-    
-    for (int i = 0; i < 8; i++) {
-      TxData[i] = (data >> (56 - i * 8)) & 0xFF; //64bitのデータを8bitに分割する
+        printControlData(ps); //debug用
+
+        for (int i = 0; i < 8; i++) {
+          txData[i] = (data >> (56 - i * 8)) & 0xFF; //64bitのデータを8bitに分割する
+        }
+        //CAN.beginPacket(ID);
+        //CAN.write(txData, sizeof(txData));  
+        //CAN.endPacket();
+      }     
+      buffer = "";  //buffer clear
+    }else{
+      buffer += incomingByte; //bufferに文字を追加
     }
-
-    //CAN.beginPacket(ID);
-    //CAN.write(TxData, sizeof(TxData));  
-    //CAN.endPacket();
-    
-    Serial2.flush();
+  }
+  //TODO serialが送られてきていない時の停止制御を書く
+  if(millis()-lastReceiveTime > TIMEOUT && buffer.length() > 0){ //タイムアウト時間を超えた時かつ、 bufferが空でない時
+    Serial.println("Buffer cleared");
+    buffer = "";  //buffer clear
   }
 }
