@@ -10,7 +10,6 @@ const uint8_t DEAD_ZONE = 30; // デッドゾーン
 const uint32_t TIMEOUT = 50;  // タイムアウト時間(ms)
 uint32_t lastReceiveTime = 0; // 最後にデータが送られてきた時間
 
-// TODO ピン番号を変更
 const uint8_t TX_PIN = 17;
 const uint8_t RX_PIN = 16;
 
@@ -115,6 +114,10 @@ void setup() {
   rightLaunchingServo.attach(RIGHT_SERVO_PIN);
   leftLaunchingServo.write(left_launching_degree);
   rightLaunchingServo.write(right_launching_degree);
+  
+  pinMode(COLLECT_DIR,OUTPUT);
+  ledcSetup(4,5000,8);
+  ledcAttachPin(COLLECT_PWM,4);
 }
 
 void loop() {
@@ -157,7 +160,7 @@ void loop() {
       buffer += incomingByte; // bufferに文字を追加
     }
   }
-  
+
   // TODO serialが送られてきていない時の停止制御を書く
   if (millis() - lastReceiveTime > TIMEOUT &&
       buffer.length() >
