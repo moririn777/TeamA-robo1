@@ -28,6 +28,8 @@ Servo rightLaunchingServo;
 uint16_t left_launching_degree = 0;
 uint16_t right_launching_degree = 0;
 
+const uint8_t LAUNCHING_DEGREE = 90;
+
 struct ControlData {
   /*25bit*/
   int8_t left_x; // 左スティックX  -128~128の範囲 8bit
@@ -154,6 +156,19 @@ void loop() {
         // CAN.beginPacket(ID);
         // CAN.write(txData, sizeof(txData));
         // CAN.endPacket();
+        if(ps.catching){
+          ledcWrite(4,128);
+          digitalWrite(COLLECT_DIR,LOW);
+        }else{
+          ledcWrite(4,0);
+          digitalWrite(COLLECT_DIR,LOW);
+        }
+        if(ps.l_launching){
+          leftLaunchingServo.write(LAUNCHING_DEGREE);
+        }
+        if(ps.r_launching){
+          rightLaunchingServo.write(LAUNCHING_DEGREE);
+        }
       }
       buffer = ""; // buffer clear
     } else {
