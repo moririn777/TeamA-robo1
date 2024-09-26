@@ -14,16 +14,15 @@ const uint8_t DEAD_ZONE = 30; // デッドゾーン
 const uint32_t TIMEOUT = 10000;  // タイムアウト時間(ms)
 uint32_t lastReceiveTime = 0; // 最後にデータが送られてきた時間
 
-Motor frontLeft(32, 22, 4); // motor1
-Motor frontRight(33, 21, 5);
-Motor rearLeft(25, 19, 6);
-Motor rearRight(14, 26, 7);
-
-Motor collect(18, 5, 8); // motor5
+/*MotorPIN*/
+Motor frontLeft(32, 22, 3); // motor1
+Motor frontRight(33, 21, 4);
+Motor rearLeft(25, 19, 5);
+Motor rearRight(14, 26, 6);
+Motor collectMotor(18, 5, 7); // motor5
+/*--------------*/
 
 bool is_auto_mode = false; // ボール回収
-
-/*--------------*/
 
 /*Serial*/
 const uint8_t START_BYTE = 0x02;
@@ -66,7 +65,7 @@ bool l_launch_flag = 0;
 bool left_flag = 0;
 bool right_flag = 0;
 
-/*メカナム*/
+/*オムニ*/
 void calculateWheelRPMs(int16_t x, int16_t y, bool l, bool r) {
   int8_t rotation = 0;
 
@@ -85,8 +84,8 @@ void calculateWheelRPMs(int16_t x, int16_t y, bool l, bool r) {
 }
 
 void runMotor(int16_t motor_value, Motor &motor, bool reverse_dir) {
-  motor_value = abs(motor_value) > 20 ? motor_value : 0;
-  motor_value = abs(motor_value) > 255 ? 255 : motor_value;
+  motor_value = (abs(motor_value) > DEAD_ZONE ? motor_value : 0);
+  motor_value = (abs(motor_value) > 255 ? 255 : motor_value);
   bool direction = motor_value < 0 ? reverse_dir : !reverse_dir;
   motor.run(abs(motor_value), direction);
 }
@@ -113,6 +112,7 @@ void printControlData(const ControlData &data) {
 }
 /*--------------*/
 
+/*シリアルをリセット*/
 void serialReset() {
   is_start = false;
   is_next_bytes_data = false;
@@ -121,6 +121,17 @@ void serialReset() {
   for (int i = 0; i < BUFFER_LEN; i++) {
     buffer[i] = 0;
   }
+}
+
+/*MotorStop*/
+void motorSafety(){ 
+    frontLeft.run(0, 0);
+    frontRight.run(0, 0);
+    rearLeft.run(0, 0);
+    rearRight.run(0, 0);
+    collectMotor.run(0,0);
+    RightLaunch.write(R_SET_DEGREE);
+    LeftLaunch.write(L_SET_DEGREE);
 }
 
 void setup() {
@@ -136,24 +147,10 @@ void setup() {
 
 void loop() {
   // timeout
-  while (1)
-  {
-     frontLeft.run(128, 0);
-    frontRight.run(128, 0);
-    rearLeft.run(128, 0);
-    rearRight.run(128, 0);
-  }
   
-   
-    
   if (is_start && millis() - lastReceiveTime > TIMEOUT) {
     serialReset();
-    frontLeft.run(0, 0);
-    frontRight.run(0, 0);
-    rearLeft.run(0, 0);
-    rearRight.run(0, 0);
-    RightLaunch.write(R_SET_DEGREE);
-    LeftLaunch.write(L_SET_DEGREE);
+    motorSafety();
   }
 
   if (Serial2.available()) {
@@ -195,8 +192,6 @@ void loop() {
       printControlData(ps); // debug用
       calculateWheelRPMs(ps.left_x, ps.left_y, left_flag, right_flag);
 
-      collect.run(64,1);
-      /*
       runMotor(front_left, frontLeft, 1);   // Front left motor
       runMotor(front_right, frontRight, 0); // Front right motor
       runMotor(rear_left, rearLeft, 1);     // Rear left motor
@@ -224,19 +219,14 @@ void loop() {
         is_auto_mode = !is_auto_mode;
       }
       if (is_auto_mode) {
-        collect.run(64, 0); // モーターを回し続ける
+        collectMotor.run(64, 0); // モーターを回し続ける
       }
       else{
-        collect.run(0,0);
+        collectMotor.run(0,0);
       }
     } else {
       serialReset();
-      frontLeft.run(0, 0);
-      frontRight.run(0, 0);
-      rearLeft.run(0, 0);
-      rearRight.run(0, 0);
-      RightLaunch.write(R_SET_DEGREE);
-      LeftLaunch.write(L_SET_DEGREE);
+      motorSafety();
     }
   }
 }
