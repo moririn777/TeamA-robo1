@@ -11,8 +11,9 @@ int16_t rear_right = 0;
 const uint16_t ROBOT_RADIUS = 1; // ロボットの中心からオムニまでの長さ
 const uint8_t DEAD_ZONE = 30; // デッドゾーン
 
-const uint32_t TIMEOUT = 10000;  // タイムアウト時間(ms)
-uint32_t lastReceiveTime = 0; // 最後にデータが送られてきた時間
+// TODO タイムアウト時間を修正
+const uint32_t TIMEOUT = 10000; // タイムアウト時間(ms)
+uint32_t lastReceiveTime = 0;   // 最後にデータが送られてきた時間
 
 /*MotorPIN*/
 Motor frontLeft(32, 22, 3); // motor1
@@ -124,14 +125,14 @@ void serialReset() {
 }
 
 /*MotorStop*/
-void motorSafety(){ 
-    frontLeft.run(0, 0);
-    frontRight.run(0, 0);
-    rearLeft.run(0, 0);
-    rearRight.run(0, 0);
-    collectMotor.run(0,0);
-    RightLaunch.write(R_SET_DEGREE);
-    LeftLaunch.write(L_SET_DEGREE);
+void motorSafety() {
+  frontLeft.run(0, 0);
+  frontRight.run(0, 0);
+  rearLeft.run(0, 0);
+  rearRight.run(0, 0);
+  collectMotor.run(0, 0);
+  RightLaunch.write(R_SET_DEGREE);
+  LeftLaunch.write(L_SET_DEGREE);
 }
 
 void setup() {
@@ -147,7 +148,7 @@ void setup() {
 
 void loop() {
   // timeout
-  
+
   if (is_start && millis() - lastReceiveTime > TIMEOUT) {
     serialReset();
     motorSafety();
@@ -157,7 +158,7 @@ void loop() {
     lastReceiveTime = millis();
     char data = Serial2.read();
     if (!is_start && !is_next_bytes_data && data == START_BYTE) {
-      Serial.println("Start");//Serial受信開始
+      Serial.println("Start"); // Serial受信開始
       is_start = true;
       is_next_bytes_data = true;
     } else if (is_start && is_next_bytes_data) {
@@ -170,59 +171,58 @@ void loop() {
       current_bytes += 1;
     } else if (is_start && !is_next_bytes_data && current_bytes == bytes &&
                data == END_BYTE) {
-      Serial.println("End");  //serial終了
+      Serial.println("End"); // serial終了
       for (int i = 0; i < 3; i++) {
         Serial.printf("Buffer: %02x\n", buffer[i] & 0x000000FF);
       }
-      ControlData ps;
+      ControlData uart;
 
       // 構造体にコピー
-      memcpy(&ps.left_x, &buffer[0], 1); // left_x
-      memcpy(&ps.left_y, &buffer[1], 1); // right_x
+      memcpy(&uart.left_x, &buffer[0], 1); // left_x
+      memcpy(&uart.left_y, &buffer[1], 1); // right_x
 
-      ps.flags = buffer[2]; // buffer[2] から 8ビットのデータを flags にコピー
+      uart.flags = buffer[2]; // buffer[2] から 8ビットのデータを flags にコピー
 
-      collect_flag = (ps.flags & 0b10000000) > 0;  // 回収モータ
-      r_launch_flag = (ps.flags & 0b01000000) > 0; // 右発射
-      l_launch_flag = (ps.flags & 0b00100000) > 0; // 左発射
-      left_flag = (ps.flags & 0b00010000) > 0;     // 左回転
-      right_flag = (ps.flags & 0b00001000) > 0;    // 右回転
+      collect_flag = (uart.flags & 0b10000000) > 0;  // 回収モータ
+      r_launch_flag = (uart.flags & 0b01000000) > 0; // 右発射
+      l_launch_flag = (uart.flags & 0b00100000) > 0; // 左発射
+      left_flag = (uart.flags & 0b00010000) > 0;     // 左回転
+      right_flag = (uart.flags & 0b00001000) > 0;    // 右回転
       serialReset();
 
-      printControlData(ps); // debug用
-      calculateWheelRPMs(ps.left_x, ps.left_y, left_flag, right_flag);
+      printControlData(uart); // debug用
+      calculateWheelRPMs(uart.left_x, uart.left_y, left_flag, right_flag);
 
       runMotor(front_left, frontLeft, 1);   // Front left motor
       runMotor(front_right, frontRight, 0); // Front right motor
       runMotor(rear_left, rearLeft, 1);     // Rear left motor
       runMotor(rear_right, rearRight, 0);   // Rear right motor*/
 
-      if (l_launch_flag) {  //左発射
+      if (l_launch_flag) { // 左発射
         if (!l_launched) {
-          LeftLaunch.write(L_LAUNCHING_DEGREE);
+          LeftLaunch.write(L_LAUNCHING_DEGREE); // 発射
         } else {
           LeftLaunch.write(L_SET_DEGREE);
         }
         l_launched = !l_launched;
       }
 
-      if (r_launch_flag) {  //右発射
+      if (r_launch_flag) { // 右発射
         if (!r_launched) {
-          RightLaunch.write(R_LAUNCHING_DEGREE);
+          RightLaunch.write(R_LAUNCHING_DEGREE); // 発射
         } else {
           RightLaunch.write(R_SET_DEGREE);
         }
         r_launched = !r_launched;
       }
 
-      if (collect_flag) { //ボール回収フラグ
+      if (collect_flag) { // ボール回収フラグ
         is_auto_mode = !is_auto_mode;
       }
       if (is_auto_mode) {
         collectMotor.run(64, 0); // モーターを回し続ける
-      }
-      else{
-        collectMotor.run(0,0);
+      } else {
+        collectMotor.run(0, 0);
       }
     } else {
       serialReset();
