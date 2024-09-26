@@ -1,87 +1,97 @@
 #include <Arduino.h>
-#include <CAN.h>
 #include <ESP32Servo.h>
+#include <Motor.h>
 
-const unsigned int LENGTH = 1; // ロボットの中心からオムニまでの長さ
-const unsigned int ID = 0x555; // ID
+/*足周り*/
+int16_t front_left = 0;
+int16_t front_right = 0;
+int16_t rear_left = 0;
+int16_t rear_right = 0;
 
+const uint16_t ROBOT_RADIUS = 1; // ロボットの中心からオムニまでの長さ
 const uint8_t DEAD_ZONE = 30; // デッドゾーン
 
-const uint32_t TIMEOUT = 50;  // タイムアウト時間(ms)
+const uint32_t TIMEOUT = 10000;  // タイムアウト時間(ms)
 uint32_t lastReceiveTime = 0; // 最後にデータが送られてきた時間
 
-const uint8_t TX_PIN = 17;
-const uint8_t RX_PIN = 16;
+Motor frontLeft(32, 22, 4); // motor1
+Motor frontRight(33, 21, 5);
+Motor rearLeft(25, 19, 6);
+Motor rearRight(14, 26, 7);
 
-const uint8_t RIGHT_SERVO_PIN = 23; // 右発射用サーボ
-const uint8_t LEFT_SERVO_PIN = 27;  // 左発射用サーボ
+Motor collect(18, 5, 8); // motor5
 
-const uint8_t COLLECT_PWM = 32; // 回収用モータPWM
-const uint8_t COLLECT_DIR = 22;  // DIR
-//const uint8_t TAKE_PWM = 33;   // PWM
-//const uint8_t TAKE_DIR = 21;   // DIR
+bool is_auto_mode = false; // ボール回収
+
+/*--------------*/
+
+/*Serial*/
+const uint8_t START_BYTE = 0x02;
+const uint8_t END_BYTE = 0x03;
+const uint8_t BUFFER_LEN = 10;
+
+bool is_start = false;
+bool is_next_bytes_data = false;
+uint8_t bytes = 0;
+uint8_t current_bytes = 0;
+int8_t buffer[BUFFER_LEN];
+/*------------*/
 
 /*Servo*/
-Servo leftLaunchingServo;
-Servo rightLaunchingServo;
+Servo RightLaunch;
+Servo LeftLaunch;
 
-uint16_t left_launching_degree = 0;
-uint16_t right_launching_degree = 0;
+const uint8_t L_LAUNCH_SERVO_PIN = 23;
+const uint8_t R_LAUNCH_SERVO_PIN = 27;
 
-const uint8_t LAUNCHING_DEGREE = 90;
+const uint8_t L_SET_DEGREE = 180;
+const uint8_t L_LAUNCHING_DEGREE = 90;
+const uint8_t R_SET_DEGREE = 90;
+const uint8_t R_LAUNCHING_DEGREE = 180;
+
+bool r_launched = false;
+bool l_launched = false;
+/*-------------*/
 
 struct ControlData {
-  /*25bit*/
-  int8_t left_x; // 左スティックX  -128~128の範囲 8bit
-  int8_t left_y; // 左スティックY -128~128の範囲
-
-  uint8_t catching : 1;    //  ボール回収 0-1 1bit
-  uint8_t r_launching : 1; // 右発射 0-1
-  uint8_t l_launching : 1; // 左発射  0-1
-
-  uint8_t left : 1;  // 左旋回 0-1
-  uint8_t right : 1; // 右旋回 0-1
+  int8_t left_x; // 左スティックX
+  int8_t left_y; // 左スティックY
+  uint8_t flags; //
 };
 
-struct Motor_RPMs {
-  uint16_t frontLeft;
-  uint16_t frontRight;
-  uint16_t rearLeft;
-  uint16_t rearRight;
-};
+/*flagsの中身*/
+bool collect_flag = 0;
+bool r_launch_flag = 0;
+bool l_launch_flag = 0;
+bool left_flag = 0;
+bool right_flag = 0;
 
-Motor_RPMs calculateWheelRPMs(int x, int y, bool l,
-                              bool r) { // オムニホイールの各RPMを代入
-  Motor_RPMs RPMs;
+/*メカナム*/
+void calculateWheelRPMs(int16_t x, int16_t y, bool l, bool r) {
   int8_t rotation = 0;
 
-  rotation = l ? -64 : 0;
-  rotation = r ? 64 : 0;
+  if (l && r) {
+    rotation = 0; // 両方が押された場合は回転なしにする
+  } else if (l) {
+    rotation = -64;
+  } else if (r) {
+    rotation = 64;
+  }
 
-  RPMs.frontLeft =
-      (cos(radians(45.0)) * x) + (sin(radians(45.0)) * y) + rotation;
-  RPMs.frontRight =
-      (cos(radians(135.0)) * x) + (sin(radians(135.0)) * y) - rotation;
-  RPMs.rearLeft =
-      (cos(radians(225.0)) * x) + (sin(radians(225.0)) * y) + rotation;
-  RPMs.rearRight =
-      (cos(radians(315.0)) * x) + (sin(radians(315.0)) * y) - rotation;
-
-  return RPMs;
+  front_right = (-x + y) / sqrt(2.0) - rotation * ROBOT_RADIUS;
+  front_left = (x + y) / sqrt(2.0) + rotation * ROBOT_RADIUS;
+  rear_right = (x - y) / sqrt(2.0) - rotation * ROBOT_RADIUS;
+  rear_left = (-x - y) / sqrt(2.0) + rotation * ROBOT_RADIUS;
 }
 
-uint64_t combineMotorRPMs(Motor_RPMs RPMs) {
-  uint64_t RPMdata;
-
-  // 各モーターの RPM 値をシフトして結合（16ビットに制限）
-  RPMdata |= ((uint64_t)((uint16_t)RPMs.frontLeft) << 48);
-  RPMdata |= ((uint64_t)((uint16_t)RPMs.frontRight) << 32);
-  RPMdata |= ((uint64_t)((uint16_t)RPMs.rearLeft) << 16);
-  RPMdata |= (uint64_t)((uint16_t)RPMs.rearRight);
-
-  return RPMdata;
+void runMotor(int16_t motor_value, Motor &motor, bool reverse_dir) {
+  motor_value = abs(motor_value) > 20 ? motor_value : 0;
+  motor_value = abs(motor_value) > 255 ? 255 : motor_value;
+  bool direction = motor_value < 0 ? reverse_dir : !reverse_dir;
+  motor.run(abs(motor_value), direction);
 }
 
+/*debug*/
 void printControlData(const ControlData &data) {
   Serial.println("Control Data:");
   Serial.print("Left Stick X: ");
@@ -89,106 +99,144 @@ void printControlData(const ControlData &data) {
   Serial.print("Left Stick Y: ");
   Serial.println(data.left_y);
 
-  Serial.print("Square: ");
-  Serial.println(data.catching ? "Pressed" : "Not Pressed");
-  Serial.print("Circle: ");
-  Serial.println(data.r_launching ? "Pressed" : "Not Pressed");
-  Serial.print("Triangle: ");
-  Serial.println(data.l_launching ? "Pressed" : "Not Pressed");
+  Serial.print("collect_flag: ");
+  Serial.println(collect_flag ? "Pressed" : "Not Pressed");
+  Serial.print("Right_Launching: ");
+  Serial.println(r_launch_flag ? "Pressed" : "Not Pressed");
+  Serial.print("Left_Launching: ");
+  Serial.println(l_launch_flag ? "Pressed" : "Not Pressed");
 
   Serial.print("Left: ");
-  Serial.println(data.left ? "Pressed" : "Not Pressed");
+  Serial.println(left_flag ? "Pressed" : "Not Pressed");
   Serial.print("Right: ");
-  Serial.println(data.right ? "Pressed" : "Not Pressed");
+  Serial.println(right_flag ? "Pressed" : "Not Pressed");
+}
+/*--------------*/
+
+void serialReset() {
+  is_start = false;
+  is_next_bytes_data = false;
+  bytes = 0;
+  current_bytes = 0;
+  for (int i = 0; i < BUFFER_LEN; i++) {
+    buffer[i] = 0;
+  }
 }
 
 void setup() {
   Serial.begin(115200);
   Serial2.begin(115200);
 
-  if (!CAN.begin(1000E3)) {
-    Serial.println("ERROR:Starting CAN failed!");
-    while (1)
-      ;
-    delay(1);
-  }
-  leftLaunchingServo.attach(LEFT_SERVO_PIN);
-  rightLaunchingServo.attach(RIGHT_SERVO_PIN);
-  leftLaunchingServo.write(left_launching_degree);
-  rightLaunchingServo.write(right_launching_degree);
-  
-  pinMode(COLLECT_DIR,OUTPUT);
-  ledcSetup(4,5000,8);
-  ledcAttachPin(COLLECT_PWM,4);
+  RightLaunch.attach(L_LAUNCH_SERVO_PIN);
+  LeftLaunch.attach(R_LAUNCH_SERVO_PIN);
+
+  RightLaunch.write(R_SET_DEGREE);
+  LeftLaunch.write(L_SET_DEGREE);
 }
 
 void loop() {
-  static String buffer = "";
-  ControlData ps;
-  Motor_RPMs RPMs;
-
-  uint32_t receiveData = 0; // UART2の受信データ格納用
-  uint64_t data = 0;        // モータのRPMデータ格納用
-
-  uint8_t txData[8]; // CANの送信データ格納用
-
-  while (Serial2.available()) {
-    char incomingByte = Serial2.read();
-    lastReceiveTime = millis();
-
-    if (incomingByte == '\n') {
-      if (buffer.length() >= sizeof(receiveData)) {
-        memcpy(&receiveData, buffer.c_str(), sizeof(receiveData));
-        memcpy(&ps, &receiveData,
-               sizeof(ps)); // 32ビットの整数から構造体にコピー
-
-        RPMs =
-            calculateWheelRPMs(ps.left_x, ps.left_y, ps.left,
-                               ps.right); // メカナムの各モーターのＲＰＭを計算
-        data = combineMotorRPMs(RPMs); // 64bitのデータを取得
-
-        printControlData(ps); // debug用
-
-        for (int i = 0; i < 8; i++) {
-          txData[i] =
-              (data >> (56 - i * 8)) & 0xFF; // 64bitのデータを8bitに分割する
-        }
-        // CAN.beginPacket(ID);
-        // CAN.write(txData, sizeof(txData));
-        // CAN.endPacket();
-        if(ps.catching){
-          ledcWrite(4,128);
-          digitalWrite(COLLECT_DIR,LOW);
-        }else{
-          ledcWrite(4,0);
-          digitalWrite(COLLECT_DIR,LOW);
-        }
-        if(ps.l_launching){
-          leftLaunchingServo.write(LAUNCHING_DEGREE);
-        }
-        if(ps.r_launching){
-          rightLaunchingServo.write(LAUNCHING_DEGREE);
-        }
-      }
-      buffer = ""; // buffer clear
-    } else {
-      buffer += incomingByte; // bufferに文字を追加
-    }
+  // timeout
+  while (1)
+  {
+     frontLeft.run(128, 0);
+    frontRight.run(128, 0);
+    rearLeft.run(128, 0);
+    rearRight.run(128, 0);
+  }
+  
+   
+    
+  if (is_start && millis() - lastReceiveTime > TIMEOUT) {
+    serialReset();
+    frontLeft.run(0, 0);
+    frontRight.run(0, 0);
+    rearLeft.run(0, 0);
+    rearRight.run(0, 0);
+    RightLaunch.write(R_SET_DEGREE);
+    LeftLaunch.write(L_SET_DEGREE);
   }
 
-  // TODO serialが送られてきていない時の停止制御を書く
-  if (millis() - lastReceiveTime > TIMEOUT &&
-      buffer.length() >
-          0) { // タイムアウト時間を超えた時かつ、 bufferが空でない時
-    Serial.println("Buffer cleared");
-    buffer = ""; // buffer clear
-    data=0;
-    for (int i = 0; i < 8; i++) {
-          txData[i] =
-              (data >> (56 - i * 8)) & 0xFF; // 64bitのデータを8bitに分割する
+  if (Serial2.available()) {
+    lastReceiveTime = millis();
+    char data = Serial2.read();
+    if (!is_start && !is_next_bytes_data && data == START_BYTE) {
+      Serial.println("Start");//Serial受信開始
+      is_start = true;
+      is_next_bytes_data = true;
+    } else if (is_start && is_next_bytes_data) {
+      bytes = data;
+      Serial.printf("Bytes: %d\n", bytes);
+      is_next_bytes_data = false;
+    } else if (is_start && !is_next_bytes_data && current_bytes < bytes) {
+      Serial.printf("Data: %02x\n", data);
+      buffer[current_bytes] = data;
+      current_bytes += 1;
+    } else if (is_start && !is_next_bytes_data && current_bytes == bytes &&
+               data == END_BYTE) {
+      Serial.println("End");  //serial終了
+      for (int i = 0; i < 3; i++) {
+        Serial.printf("Buffer: %02x\n", buffer[i] & 0x000000FF);
+      }
+      ControlData ps;
+
+      // 構造体にコピー
+      memcpy(&ps.left_x, &buffer[0], 1); // left_x
+      memcpy(&ps.left_y, &buffer[1], 1); // right_x
+
+      ps.flags = buffer[2]; // buffer[2] から 8ビットのデータを flags にコピー
+
+      collect_flag = (ps.flags & 0b10000000) > 0;  // 回収モータ
+      r_launch_flag = (ps.flags & 0b01000000) > 0; // 右発射
+      l_launch_flag = (ps.flags & 0b00100000) > 0; // 左発射
+      left_flag = (ps.flags & 0b00010000) > 0;     // 左回転
+      right_flag = (ps.flags & 0b00001000) > 0;    // 右回転
+      serialReset();
+
+      printControlData(ps); // debug用
+      calculateWheelRPMs(ps.left_x, ps.left_y, left_flag, right_flag);
+
+      collect.run(64,1);
+      /*
+      runMotor(front_left, frontLeft, 1);   // Front left motor
+      runMotor(front_right, frontRight, 0); // Front right motor
+      runMotor(rear_left, rearLeft, 1);     // Rear left motor
+      runMotor(rear_right, rearRight, 0);   // Rear right motor*/
+
+      if (l_launch_flag) {  //左発射
+        if (!l_launched) {
+          LeftLaunch.write(L_LAUNCHING_DEGREE);
+        } else {
+          LeftLaunch.write(L_SET_DEGREE);
         }
-    // CAN.beginPacket(ID);
-    // CAN.write(txData, sizeof(txData));
-    // CAN.endPacket();
+        l_launched = !l_launched;
+      }
+
+      if (r_launch_flag) {  //右発射
+        if (!r_launched) {
+          RightLaunch.write(R_LAUNCHING_DEGREE);
+        } else {
+          RightLaunch.write(R_SET_DEGREE);
+        }
+        r_launched = !r_launched;
+      }
+
+      if (collect_flag) { //ボール回収フラグ
+        is_auto_mode = !is_auto_mode;
+      }
+      if (is_auto_mode) {
+        collect.run(64, 0); // モーターを回し続ける
+      }
+      else{
+        collect.run(0,0);
+      }
+    } else {
+      serialReset();
+      frontLeft.run(0, 0);
+      frontRight.run(0, 0);
+      rearLeft.run(0, 0);
+      rearRight.run(0, 0);
+      RightLaunch.write(R_SET_DEGREE);
+      LeftLaunch.write(L_SET_DEGREE);
+    }
   }
 }
